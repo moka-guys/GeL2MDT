@@ -28,13 +28,14 @@ class InterpretationList(object):
     a list of case numbers by status along with the hash of the current case
     data.
     """
-    def __init__(self, sample_type, sample=None):
+    def __init__(self, sample_type, sample=None, sites=None):
         self.sample_type = sample_type
         self.sample = sample
+        self.sites = sites
         self.all_cases = self.get_all_cases()
         self.cases_to_poll = self.get_poll_cases()
         self.blocked_cases = self.get_blocked_cases()
-
+    
     def get_all_cases(self):
         """
         Invokes PollAPI to retrieve a list of all the cases available to a
@@ -63,6 +64,20 @@ class InterpretationList(object):
                     for result in request_list_results
                     if result["sample_type"] == self.sample_type
                     and result['proband'] == self.sample]
+            elif self.sites:
+                all_cases += [{
+                    # add the ir_id, sample type, and latest status to dict
+                    # Only add if case is from specified site (if intersect
+                    # between self.sites and result['sites'] returns a value)
+                    "interpretation_request_id":
+                        result["interpretation_request_id"],
+                    "sample_type":
+                        result["sample_type"],
+                    "last_status":
+                        result["last_status"]}
+                    for result in request_list_results
+                    if result["sample_type"] == self.sample_type
+                    and (set(self.sites) & set(result["sites"]))]
             else:
                 all_cases += [{
                     # add the ir_id, sample type, and latest status to dict

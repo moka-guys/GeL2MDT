@@ -48,7 +48,7 @@ class MultipleCaseAdder(object):
     """
     def __init__(self, sample_type, head=None, test_data=False,
                  skip_demographics=False, sample=None, pullt3=True,
-                 bins=None):
+                 bins=None, sites=None):
         """
         Initiliase an instance of a MultipleCaseAdder to start managing
         a database update. This will get the list of cases available to
@@ -57,6 +57,7 @@ class MultipleCaseAdder(object):
         :param test_data: Boolean. Use test data or not. Default = False
         :param sample: If you want to add a single sample, set this the GELID
         :param pullt3: Boolean to pull t3 variants
+        :param sites: Optional list of site codes to restrict which cases imported
         """
         print("Initialising a MultipleCaseAdder.")
 
@@ -76,6 +77,9 @@ class MultipleCaseAdder(object):
         self.pullt3 = pullt3
         # get the config file for datadumps
         self.config = load_config.LoadConfig().load()
+        # Optional list to only pull cases from specific sites within GMC
+        # defaults None (don't restrict to specific sites)
+        self.sites = sites
 
         # instantiate a PanelManager for the Case classes to use
         self.panel_manager = PanelManager()
@@ -83,6 +87,7 @@ class MultipleCaseAdder(object):
         self.variant_manager = VariantManager()
         self.gene_manager = GeneManager()
         self.sample_type = sample_type
+        
 
         if self.test_data:
             print("Fetching test data.")
@@ -111,7 +116,7 @@ class MultipleCaseAdder(object):
             # set list_of_cases to cases of interest from API
             print("Fetching live API data.")
             print("Polling for list of available cases...")
-            interpretation_list_poll = InterpretationList(sample_type=sample_type)
+            interpretation_list_poll = InterpretationList(sample_type=sample_type, sites=sites)
             self.blocked_cases = interpretation_list_poll.blocked_cases
             self.block_cases()
             cases_fetched = len(interpretation_list_poll.cases_to_poll)
