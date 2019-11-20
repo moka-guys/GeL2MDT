@@ -22,6 +22,7 @@ SOFTWARE.
 {% extends 'gel2mdt/base.html' %}
 {% load bootstrap3 %}
 {% load static %}
+{% load gel2mdt_extras %}
 
 
     {% block tabs %}
@@ -58,12 +59,16 @@ SOFTWARE.
                    <ul class="nav navbar-nav">
                         <li><a href="{% url 'audit' sample_type=sample_type %}" ><i class="fas fa-tachometer-alt"></i> Audit</a></li>
                         </ul>
+                    {% if user|has_group_permission:'can_edit_validation_list' %}
                     <ul class="nav navbar-nav">
                         <li><a href="{% url 'validation-list' sample_type=sample_type %}" ><i class="fas fa-check-circle"></i> Validation</a></li>
                         </ul>
-                   <ul class="nav navbar-nav">
-                        <li ><a href="{% url 'case-alert' sample_type=sample_type %}" ><i class="fas fa-bell"></i> Case Alerts</a></li>
+                    {% endif %}
+                     {% if user|has_group_permission:'can_edit_case_alert' %}
+                     <ul class="nav navbar-nav">
+                        <li><a href="{% url 'case-alert' sample_type=sample_type %}" ><i class="fas fa-bell"></i> Case Alerts</a></li>
                         </ul>
+                    {% endif %}
         {% endif %}
 {% endblock %}
 
@@ -89,8 +94,10 @@ SOFTWARE.
                             <th>Description</th>
                             <th>Date</th>
                             <th>Patients Discussed</th>
-                            <th>Status</th>
+                            <th>Checked Status</th>
+                            <th>MDT Status</th>
                             <th>Creator</th>
+                            <th>Sent to clinician</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -107,8 +114,24 @@ SOFTWARE.
                                     <a href="/proband/{{report_list.0}}"> {{ report_list.1}}</a>
                                 {% endfor %}
                             </td>
+                            <td>
+                                <div class="progress">
+                                    <div class="progress-bar progress-bar-warning" style="width: {{ first_check_in_mdt|get_item:mdt.id }}%">
+                                        <strong>{{ first_check_in_mdt|get_item:mdt.id }}%</strong>
+                                    </div>
+                                    <div class="progress-bar progress-bar-success progress-bar-striped" style="width: {{ second_check_in_mdt|get_item:mdt.id }}%">
+                                        <strong>{{ second_check_in_mdt|get_item:mdt.id }}%</strong>
+                                    </div>
+                                </div>
+                            </td>
                             <td>{{mdt.get_status_display}}</td>
                             <td>{{mdt.creator}}</td>
+                            <td>
+                                {% if mdt_sent_to_clinician|get_item:mdt.id %}
+                                    </i><i class="far fa-check-circle" style="color:green"></i>
+                                {% endif %}
+
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>

@@ -34,6 +34,27 @@ class CaseVariant:
         self.alt = alt
         self.genome_build = genome_build
 
+class CaseCNV:
+    def __init__(self, chromosome, sv_start, sv_end, case_id, sv_type, genome_build):
+        self.chromosome = chromosome
+        self.sv_start = sv_start
+        self.sv_end = sv_end
+        self.case_id = case_id
+        self.sv_type = sv_type
+        self.genome_build = genome_build
+
+class CaseSTR:
+    def __init__(self, chromosome, str_start, str_end, repeated_sequence, normal_threshold, pathogenic_threshold, case_id, genome_build):
+        self.chromosome = chromosome
+        self.str_start = str_start
+        self.str_end = str_end
+        self.repeated_sequence = repeated_sequence
+        self.normal_threshold = normal_threshold
+        self.pathogenic_threshold = pathogenic_threshold
+        self.case_id = case_id
+        self.genome_build = genome_build
+
+
 class CaseTranscript:
     def __init__(self, case_id, variant_count, gene_ensembl_id, gene_hgnc_name, gene_hgnc_id, transcript_name, transcript_canonical,
                  transcript_strand, proband_transcript_variant_effect, transcript_variant_af_max, variant_polyphen,
@@ -113,7 +134,7 @@ def run_vep(infile, config_dict):
         )
         if config_dict["mergedVEP"] == 'True':
             cmd += ' --merged'
-        subprocess.Popen(cmd, stderr=subprocess.STDOUT, shell=True).wait()
+            subprocess.run(cmd, stderr=subprocess.STDOUT, shell=True, check=True)
         annotated_variant_dict['hg19_vep'] = hg19_outfile.name
     # run VEP for hg38 variants
     if os.stat(hg38_vcf).st_size != 0:
@@ -129,7 +150,7 @@ def run_vep(infile, config_dict):
         )
         if config_dict["mergedVEP"] == 'True':
             cmd += ' --merged'
-        subprocess.Popen(cmd, stderr=subprocess.STDOUT, shell=True).wait()
+        subprocess.run(cmd, stderr=subprocess.STDOUT, shell=True, check=True)
         annotated_variant_dict['hg38_vep'] = hg38_outfile.name
     return annotated_variant_dict
 
@@ -256,7 +277,7 @@ def parse_vep_annotations(infile=None):
                 variant_polyphen = variant['transcript_data'][transcript]['PolyPhen']
                 variant_sift = variant['transcript_data'][transcript]['SIFT']
                 transcript_variant_hgvs_c = variant['transcript_data'][transcript]['HGVSc']
-                transcript_variant_hgvs_p = variant['transcript_data'][transcript]['HGVSp']
+                transcript_variant_hgvs_p = variant['transcript_data'][transcript]['HGVSp'].replace('%3D', '=')
                 transcript_variant_hgvs_g = variant['transcript_data'][transcript]['HGVSg']
                 case_transcript = CaseTranscript(case_id, variant_count, gene_id, gene_name, hgnc_id, transcript_name, canonical,
                                                  transcript_strand, proband_transcript_variant_effect,

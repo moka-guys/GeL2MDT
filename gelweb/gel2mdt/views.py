@@ -22,7 +22,7 @@ SOFTWARE.
 import os
 import json
 import csv
-from datetime import datetime
+from datetime import date
 from io import BytesIO, StringIO
 
 from django.db import IntegrityError
@@ -36,23 +36,87 @@ from django.contrib.auth.decorators import login_required, user_passes_test
 from django.forms import modelformset_factory
 
 from easy_pdf.rendering import render_to_pdf_response
-
 from .config import load_config
 from .forms import *
-from .models import *
 from .filters import *
 from .tasks import *
 from .exports import write_mdt_outcome_template, write_mdt_export, write_gtab_template
-from .decorators import user_is_clinician
-
 from .api.api_views import *
-
 from .database_utils.multiple_case_adder import MultipleCaseAdder
 from .vep_utils.run_vep_batch import CaseVariant
-
+import datetime
 from bokeh.resources import CDN
 from bokeh.embed import components
 from bokeh.layouts import gridplot, row
+
+
+@login_required
+def user_admin(request):
+    '''
+    Gives a superuser the ability to change other users permissions levels
+    :param request:
+    :return:
+    '''
+    groups = Group.objects.all()
+    add_group_form = AddNewGroupForm(user=request.user)
+    for group in groups:
+        if not hasattr(group, 'grouppermissions'):
+            group_permissions = GroupPermissions(group=group)
+            group_permissions.save()
+    users = User.objects.all()
+    if request.method == 'POST':
+        add_group_form = AddNewGroupForm(request.POST, user=request.user)
+        if add_group_form.is_valid():
+            add_group_form.save()
+            messages.add_message(request, 25, 'Group Added!')
+        else:
+            messages.add_message(request, 40, 'That didn\'t work')
+        return redirect('user_admin')
+    return render(request, 'gel2mdt/user_admin.html',
+                  {'users': users, 'groups': groups,
+                   'add_group_form': add_group_form})
+
+
+@login_required
+def delete_group(request, id):
+    group = Group.objects.get(id=id)
+    group.delete()
+    messages.add_message(request, 25, 'Group Deleted')
+    return redirect('user_admin')
+
+
+@login_required
+def edit_group(request, id):
+    data = {}
+    group = Group.objects.get(id=id)
+    group_form = GroupPermissionsForm(instance=group.grouppermissions, user=request.user)
+    if request.method == 'POST':
+        group_form = GroupPermissionsForm(request.POST, instance=group.grouppermissions, user=request.user)
+        if group_form.is_valid():
+            group_form.save()
+            data['form_is_valid'] = True
+        return redirect('user_admin')
+    context = {'group_form': group_form, 'group': group}
+    html_form = render_to_string('gel2mdt/modals/group_permissions_modal.html', context, request=request)
+    data['html_form'] = html_form
+    return JsonResponse(data)
+
+
+@login_required
+def edit_user(request, id):
+    data = {}
+    user = User.objects.get(id=id)
+    user_form = EditUserForm(instance=user, user=request.user)
+    if request.method == 'POST':
+        user_form = EditUserForm(request.POST, instance=user, user=request.user)
+        if user_form.is_valid():
+            user_form.save()
+            data['form_is_valid'] = True
+        return redirect('user_admin')
+    context = {'user_form': user_form, 'user': user}
+    html_form = render_to_string('gel2mdt/modals/user_permissions_modal.html', context, request=request)
+    data['html_form'] = html_form
+    return JsonResponse(data)
 
 
 def register(request):
@@ -193,13 +257,7 @@ def index(request):
     :param request:
     :return:
     '''
-    clinicians_emails = Clinician.objects.all().values_list('email', flat=True)
-    if request.user.is_staff:
-        return render(request, 'gel2mdt/index.html', {'sample_type': None})
-    elif request.user.email not in clinicians_emails:
-        return render(request, 'gel2mdt/index.html', {'sample_type': None})
-    else:
-        return redirect('gel2clin:index')
+    return render(request, 'gel2mdt/index.html', {'sample_type': None})
 
 
 @login_required
@@ -218,7 +276,6 @@ def remove_case(request, case_id):
 
 
 @login_required
-@user_is_clinician(url='cancer-main')
 def cancer_main(request):
     '''
     Shows all the Cancer cases the user has access to and allows easy searching of cases
@@ -226,13 +283,20 @@ def cancer_main(request):
     :param request:
     :return:
     '''
-    gene_search_form = GeneSearchForm()
-    return render(request, 'gel2mdt/cancer_main.html', {'sample_type': 'cancer',
-                                                        'gene_search_form': gene_search_form})
+    can_view_cancer = False
+    for group in request.user.groups.all():
+        if hasattr(group, 'grouppermissions'):
+            if group.grouppermissions.cancer:
+                can_view_cancer = True
+    if can_view_cancer:
+        gene_search_form = GeneSearchForm()
+        return render(request, 'gel2mdt/cancer_main.html', {'sample_type': 'cancer',
+                                                            'gene_search_form': gene_search_form})
+    else:
+        return redirect('index')
 
 
 @login_required
-@user_is_clinician(url='rare-disease-main')
 def rare_disease_main(request):
     '''
     Shows all the RD cases the user has access to and allows easy searching of cases
@@ -240,9 +304,17 @@ def rare_disease_main(request):
     :param request:
     :return:
     '''
-    gene_search_form = GeneSearchForm()
-    return render(request, 'gel2mdt/rare_disease_main.html', {'sample_type': 'raredisease',
-                                                              'gene_search_form': gene_search_form})
+    can_view_raredisease = False
+    for group in request.user.groups.all():
+        if hasattr(group, 'grouppermissions'):
+            if group.grouppermissions.raredisease:
+                can_view_raredisease = True
+    if can_view_raredisease:
+        gene_search_form = GeneSearchForm()
+        return render(request, 'gel2mdt/rare_disease_main.html', {'sample_type': 'raredisease',
+                                                                  'gene_search_form': gene_search_form})
+    else:
+        return redirect('index')
 
 
 @login_required
@@ -268,7 +340,6 @@ def search_by_gene(request, sample_type):
 
 
 @login_required
-@user_is_clinician(url='proband-view')
 def proband_view(request, report_id):
     '''
     Shows details about a particular proband, some fields are editable by clinical scientists
@@ -285,80 +356,122 @@ def proband_view(request, report_id):
         ir_family__participant_family=report.ir_family.participant_family).exclude(ir_family=report.ir_family)
 
     if request.method == "POST":
-        demogs_form = DemogsForm(request.POST, instance=report.ir_family.participant_family.proband)
-        case_assign_form = CaseAssignForm(request.POST, instance=report)
-        panel_form = PanelForm(request.POST)
-        clinician_form = ClinicianForm(request.POST)
-        add_clinician_form = AddClinicianForm(request.POST)
-        add_variant_form = AddVariantForm(request.POST)
-        variant_validation_form = VariantValidationForm(request.POST)
+        if 'demog' in request.POST:
+            demogs_form = DemogsForm(request.POST, user=request.user, instance=report.ir_family.participant_family.proband)
+            if demogs_form.is_valid():
+                demogs_form.save()
+                messages.add_message(request, 25, 'Proband Updated')
+            else:
+                messages.add_message(request, 40, demogs_form.errors)
+        if 'case_assign' in request.POST:
+            case_assign_form = CaseAssignForm(request.POST, user=request.user, instance=report)
+            if case_assign_form.is_valid():
+                case_assign_form.save()
+        if 'first_check_assign' in request.POST:
+            first_check_form = FirstCheckAssignForm(request.POST, user=request.user, instance=report)
+            if first_check_form.is_valid():
+                first_check_form.save()
+        if 'second_check_assign' in request.POST:
+            second_check_form = SecondCheckAssignForm(request.POST, user=request.user, instance=report)
+            if second_check_form.is_valid():
+                second_check_form.save()
+        if 'panel_assign' in request.POST:
+            panel_form = PanelForm(request.POST, user=request.user)
+            if panel_form.is_valid():
+                InterpretationReportFamilyPanel.objects.get_or_create(
+                    panel=panel_form.cleaned_data['panel'],
+                    ir_family=report.ir_family,
+                    defaults={
+                        'custom': True,
+                        'average_coverage': None,
+                        'proportion_above_15x': None,
+                        'genes_failing_coverage': None})
+                messages.add_message(request, 25, 'Panel Added')
+        if 'change_clinician' in request.POST:
+            clinician_form = ClinicianForm(request.POST, user=request.user)
+            if clinician_form.is_valid():
+                family = report.ir_family.participant_family
+                family.clinician = clinician_form.cleaned_data['clinician']
+                family.save()
+                messages.add_message(request, 25, 'Clinician Changed')
+        if 'add_clinician' in request.POST:
+            add_clinician_form = AddClinicianForm(request.POST)
+            if add_clinician_form.is_valid():
+                Clinician.objects.get_or_create(email=add_clinician_form.cleaned_data['email'],
+                                                defaults={
+                                                    'name': add_clinician_form.cleaned_data[
+                                                        'name'],
+                                                    'hospital':
+                                                        add_clinician_form.cleaned_data[
+                                                            'hospital'],
+                                                    'added_by_user': True
+                                                })
+                messages.add_message(request, 25, 'Clinician Created')
+        if 'add_variant' in request.POST:
+            add_variant_form = AddVariantForm(request.POST, user=request.user)
+            if add_variant_form.is_valid():
+                variant = CaseVariant(add_variant_form.cleaned_data['chromosome'],
+                                      add_variant_form.cleaned_data['position'],
+                                      report_id,
+                                      1,
+                                      add_variant_form.cleaned_data['reference'],
+                                      add_variant_form.cleaned_data['alternate'],
+                                      str(report.assembly))
+                variant_entry, created = Variant.objects.get_or_create(
+                    chromosome=add_variant_form.cleaned_data['chromosome'],
+                    position=add_variant_form.cleaned_data['position'],
+                    genome_assembly=report.assembly,
+                    reference=add_variant_form.cleaned_data['reference'],
+                    alternate=add_variant_form.cleaned_data['alternate'],
+                    defaults={'db_snp_id': add_variant_form.cleaned_data['db_snp_id']})
 
-        if variant_validation_form.is_valid():
-            validation_status = variant_validation_form.cleaned_data['validation_status']
-            validation_user = variant_validation_form.cleaned_data['validation_responsible_user']
+                VariantAdder(variant_entry=variant_entry,
+                             report=report,
+                             variant=variant)
+                messages.add_message(request, 25, 'Variant Added to Report')
+        if 'add_comment' in request.POST:
+            add_comment_form = AddCommentForm(request.POST, user=request.user)
+            if add_comment_form.is_valid():
+                CaseComment.objects.create(interpretation_report=report,
+                                           comment=add_comment_form.cleaned_data['comment'],
+                                           user=request.user,
+                                           time=timezone.now())
+                messages.add_message(request, 25, 'Comment Added')
+        if 'variant_validation' in request.POST:
+            variant_validation_form = VariantValidationForm(request.POST, user=request.user)
+            if variant_validation_form.is_valid():
+                validation_status = variant_validation_form.cleaned_data['validation_status']
+                validation_user = variant_validation_form.cleaned_data['validation_responsible_user']
 
-            pv.validation_status = validation_status
-            pv.validation_responsible_user = validation_user
-            pv.save()
+                pv.validation_status = validation_status
+                pv.validation_responsible_user = validation_user
+                pv.save()
+        if 'cancer_history' in request.POST:
+            cancer_history_form = ProbandCancerForm(request.POST, user=request.user,
+                                                    instance=report.ir_family.participant_family.proband)
+            if cancer_history_form.is_valid():
+                cancer_history_form.save()
 
-        if demogs_form.is_valid():
-            demogs_form.save()
-            messages.add_message(request, 25, 'Proband Updated')
-        if case_assign_form.is_valid():
-            case_assign_form.save()
-        if panel_form.is_valid():
-            irfp, created = InterpretationReportFamilyPanel.objects.get_or_create(panel=panel_form.cleaned_data['panel'],
-                                                                                  ir_family=report.ir_family,
-                                                                                  defaults={
-                                                                                    'custom': True,
-                                                                                   'average_coverage':None,
-                                                                                   'proportion_above_15x':None,
-                                                                                   'genes_failing_coverage':None})
-            messages.add_message(request, 25, 'Panel Added')
-        if clinician_form.is_valid():
-            family = report.ir_family.participant_family
-            family.clinician = clinician_form.cleaned_data['clinician']
-            family.save()
-            messages.add_message(request, 25, 'Clinician Changed')
-        if add_clinician_form.is_valid():
-            clinician, created = Clinician.objects.get_or_create(email=add_clinician_form.cleaned_data['email'],
-                                                                 defaults={
-                                                                     'name': add_clinician_form.cleaned_data['name'],
-                                                                     'hospital':add_clinician_form.cleaned_data['hospital'],
-                                                                     'added_by_user': True
-                                                                 })
-            messages.add_message(request, 25, 'Clinician Created')
-        if add_variant_form.is_valid():
-            variant = CaseVariant(add_variant_form.cleaned_data['chromosome'],
-                                  add_variant_form.cleaned_data['position'],
-                                  report_id,
-                                  1,
-                                  add_variant_form.cleaned_data['reference'],
-                                  add_variant_form.cleaned_data['alternate'],
-                                  str(report.assembly))
-            variant_entry, created = Variant.objects.get_or_create(chromosome=add_variant_form.cleaned_data['chromosome'],
-                                                                   position=add_variant_form.cleaned_data['position'],
-                                                                   genome_assembly=report.assembly,
-                                                                   reference=add_variant_form.cleaned_data['reference'],
-                                                                   alternate=add_variant_form.cleaned_data['alternate'],
-                                                                   defaults={'db_snp_id': add_variant_form.cleaned_data['db_snp_id']})
-            VariantAdder(variant_entry=variant_entry,
-                         report=report,
-                         variant=variant)
-            messages.add_message(request, 25, 'Variant Added to Report')
 
     relatives = Relative.objects.filter(proband=report.ir_family.participant_family.proband)
-    proband_form = ProbandForm(instance=report.ir_family.participant_family.proband)
-    gelir_form = GELIRForm(instance=report)
-    demogs_form = DemogsForm(instance=report.ir_family.participant_family.proband)
+    cancer_history_form = ProbandCancerForm(instance=report.ir_family.participant_family.proband, user=request.user)
+    proband_form = ProbandForm(instance=report.ir_family.participant_family.proband, user=request.user, report=report)
+    gelir_form = GELIRForm(instance=report, user=request.user)
+    demogs_form = DemogsForm(instance=report.ir_family.participant_family.proband, user=request.user)
     proband_variants = ProbandVariant.objects.filter(interpretation_report=report)
+    proband_svs = ProbandSV.objects.filter(interpretation_report=report)
+    proband_strs = ProbandSTR.objects.filter(interpretation_report=report)
     proband_mdt = MDTReport.objects.filter(interpretation_report=report)
     panels = InterpretationReportFamilyPanel.objects.filter(ir_family=report.ir_family)
-    panel_form = PanelForm()
-    case_assign_form = CaseAssignForm(instance=report)
-    clinician_form = ClinicianForm()
+    panel_form = PanelForm(user=request.user)
+    case_assign_form = CaseAssignForm(instance=report, user=request.user)
+    first_check_form = FirstCheckAssignForm(instance=report, user=request.user)
+    second_check_form = SecondCheckAssignForm(instance=report, user=request.user)
+    clinician_form = ClinicianForm(user=request.user)
     add_clinician_form = AddClinicianForm()
-    add_variant_form = AddVariantForm()
+
+    add_variant_form = AddVariantForm(user=request.user)
+    add_comment_form = AddCommentForm(user=request.user)
 
     variants_for_reporting = RareDiseaseReport.objects.filter(
         proband_variant__interpretation_report__id=report.id,
@@ -366,11 +479,32 @@ def proband_view(request, report_id):
         proband_variant__validation_status="P"
     )
 
-    pv_forms_dict = {}
+    pv_dict = {}
     for pv in proband_variants:
-        pv_forms_dict[pv] = VariantValidationForm(instance=pv)
+        pv_dict[pv] = {'form' : VariantValidationForm(instance=pv, user=request.user),
+                        'raredisease_report': RareDiseaseReport.objects.filter(proband_variant=pv).first(),
+                        'cancer_report' : CancerReport.objects.filter(proband_variant=pv).first(),
+                        'transcript' : pv.get_transcript(),
+                        'transcript_variant' : pv.get_transcript_variant(),
+                       'preferred_transcript': pv.get_preferred_transcript()}
 
-    if not request.user.is_staff:
+    sv_dict = {}
+    for sv in proband_svs:
+        sv_dict[sv] = {'form': SVValidationForm(instance=sv, user=request.user),
+                       'raredisease_report': RareDiseaseReport.objects.filter(proband_sv=sv).first()}
+
+    str_dict = {}
+    for proband_str in proband_strs:
+        str_dict[proband_str] = {'form': STRValidationForm(instance=proband_str, user=request.user),
+                         'raredisease_report': RareDiseaseReport.objects.filter(proband_str=proband_str).first()}
+
+    can_edit_completed = False
+    for group in request.user.groups.all():
+        if hasattr(group, 'grouppermissions'):
+            if group.grouppermissions.can_edit_completed_proband:
+                can_edit_completed = True
+
+    if not can_edit_completed:
         if report.case_status == "C":
             for field in proband_form.__dict__["fields"]:
                 proband_form.fields[field].widget.attrs['readonly'] = True
@@ -381,7 +515,9 @@ def proband_view(request, report_id):
                                                     'proband_form': proband_form,
                                                     'demogs_form': demogs_form,
                                                     'case_assign_form': case_assign_form,
-                                                    'pv_forms_dict': pv_forms_dict,
+                                                    'first_check_form': first_check_form,
+                                                    'second_check_form': second_check_form,
+                                                    'pv_dict': pv_dict,
                                                     'proband_mdt': proband_mdt,
                                                     'panels': panels,
                                                     'panel_form': panel_form,
@@ -395,11 +531,14 @@ def proband_view(request, report_id):
                                                     'proband_history': proband_history,
                                                     'report_fields': report_history_formatter.report_interesting_fields,
                                                     'proband_fields': report_history_formatter.proband_interesting_fields,
-                                                    'other_cases': other_cases})
+                                                    'other_cases': other_cases,
+                                                    'add_comment_form': add_comment_form,
+                                                    'sv_dict': sv_dict,
+                                                    'str_dict': str_dict,
+                                                    'cancer_history_form': cancer_history_form})
 
 
 @login_required
-@user_is_clinician(url='index')
 def edit_relatives(request, relative_id):
     """
     Allows users to edit relative demographic information
@@ -410,9 +549,9 @@ def edit_relatives(request, relative_id):
     """
     data = {}
     relative = Relative.objects.get(id=relative_id)
-    relative_form = RelativeForm(instance=relative)
+    relative_form = RelativeForm(instance=relative, user=request.user)
     if request.method == 'POST':
-        relative_form = RelativeForm(request.POST, instance=relative)
+        relative_form = RelativeForm(request.POST, user=request.user, instance=relative)
         if relative_form.is_valid():
             relative_form.save()
             data['form_is_valid'] = True
@@ -423,7 +562,6 @@ def edit_relatives(request, relative_id):
 
 
 @login_required
-@user_is_clinician(url='proband-view')
 def update_demographics(request, report_id):
     '''
     Allows staff users to redo labkey lookup
@@ -442,7 +580,22 @@ def ajax_variant_validation(request):
     Accepts a POST request to change the validation status of a particular
     ProbandVariant, the ID of which should be supplied in the JSON.
     """
-    proband_variant_id = request.POST.get('probandVariant')
+    if request.POST.get('probandVariant', None):
+        model = ProbandVariant
+        variant_id = request.POST.get('probandVariant', None)
+    elif request.POST.get('probandSV', None):
+        model = ProbandSV
+        variant_id = request.POST.get('probandSV', None)
+    elif request.POST.get('probandSTR', None):
+        model = ProbandSTR
+        variant_id = request.POST.get('probandSTR', None)
+    else:
+        response = json.dumps({
+            "success": True,
+            "validationStatus": None,
+            "validationUser": None
+        })
+        return HttpResponse(response, content_type="application/json")
     selected_validation_status = request.POST.get('selectedStatus')
     selected_validation_user = request.POST.get('selectedUser')
     if selected_validation_user == "---------":
@@ -461,7 +614,7 @@ def ajax_variant_validation(request):
     }
     selected_validation_status = validation_status_key[selected_validation_status]
 
-    proband_variant = ProbandVariant.objects.get(id=proband_variant_id)
+    proband_variant = model.objects.get(id=variant_id)
 
     proband_variant.validation_status = selected_validation_status
     proband_variant.validation_responsible_user = user_instance
@@ -470,7 +623,7 @@ def ajax_variant_validation(request):
         proband_variant.validation_datetime_set = timezone.now()
 
     proband_variant.save()
-    proband_variant = ProbandVariant.objects.get(id=proband_variant_id)
+    proband_variant = model.objects.get(id=variant_id)
 
     new_validation_status = proband_variant.validation_status
     new_validation_user = proband_variant.validation_responsible_user
@@ -478,7 +631,6 @@ def ajax_variant_validation(request):
         new_validation_user = new_validation_user.username
     else:
         new_validation_user = None
-
 
     response = json.dumps({
         "success": True,
@@ -500,15 +652,32 @@ def validation_list(request, sample_type):
 
     proband_variants = ProbandVariant.objects.filter(
         Q(validation_status="A") | Q(validation_status="K") | Q(validation_status="I"),
-        interpretation_report__sample_type=sample_type)
-    pv_forms_dict = {proband_variant: VariantValidationForm(instance=proband_variant)
+        interpretation_report__sample_type=sample_type).prefetch_related(*['interpretation_report',
+                                                                           'interpretation_report__ir_family',
+                                                                           'variant'])
+    pv_forms_dict = {proband_variant: VariantValidationForm(instance=proband_variant, user=request.user)
                      for proband_variant in proband_variants}
+    proband_svs = ProbandSV.objects.filter(
+        Q(validation_status="A") | Q(validation_status="K") | Q(validation_status="I"),
+        interpretation_report__sample_type=sample_type).prefetch_related(*['interpretation_report',
+                                                                           'interpretation_report__ir_family',
+                                                                           'sv'])
+    sv_forms_dict = {proband_sv: SVValidationForm(instance=proband_sv, user=request.user)
+                     for proband_sv in proband_svs}
+    proband_strs = ProbandSTR.objects.filter(
+        Q(validation_status="A") | Q(validation_status="K") | Q(validation_status="I"),
+        interpretation_report__sample_type=sample_type).prefetch_related(*['interpretation_report',
+                                                                           'interpretation_report__ir_family',
+                                                                           'str_variant'])
+    str_forms_dict = {proband_str: STRValidationForm(instance=proband_str, user=request.user)
+                     for proband_str in proband_strs}
     return render(request, 'gel2mdt/validation_list.html', {'pv_forms_dict': pv_forms_dict,
-                                                            'sample_type': sample_type})
+                                                            'sample_type': sample_type,
+                                                            'sv_forms_dict': sv_forms_dict,
+                                                            'str_forms_dict': str_forms_dict})
 
 
 @login_required
-@user_is_clinician(url='proband-view')
 def pull_t3_variants(request, report_id):
     '''
     Allows users to download T3 variants for a case
@@ -521,6 +690,7 @@ def pull_t3_variants(request, report_id):
     return HttpResponseRedirect(f'/proband/{report_id}')
 
 
+@login_required
 def panel_view(request, panelversion_id):
     '''
     Replicates panelapp but specifc for panel Version
@@ -556,9 +726,36 @@ def variant_view(request, variant_id):
                                                     'transcript_variant': transcript_variant,
                                                     'proband_variants': proband_variants})
 
+@login_required
+def sv_view(request, variant_id):
+    '''
+    Shows details about a particular SV and also probands it is present in
+    :param request:
+    :param variant_id: Variant ID
+    :return:
+    '''
+    sv = SV.objects.get(id=variant_id)
+    proband_svs = ProbandSV.objects.filter(sv=sv)
+
+    return render(request, 'gel2mdt/sv.html', {'sv': sv,
+                                                    'proband_svs': proband_svs})
+
 
 @login_required
-@user_is_clinician(url='proband-view')
+def str_view(request, variant_id):
+    '''
+    Shows details about a particular SV and also probands it is present in
+    :param request:
+    :param variant_id: Variant ID
+    :return:
+    '''
+    str_variant = STRVariant.objects.get(id=variant_id)
+    proband_strs = ProbandSTR.objects.filter(str_variant=str_variant)
+
+    return render(request, 'gel2mdt/str.html', {'str': str_variant,
+                                               'proband_strs': proband_strs})
+
+@login_required
 def update_proband(request, report_id):
     '''
     Updates the Proband page for fields used by clinical scientists such as status and outcomes
@@ -568,8 +765,8 @@ def update_proband(request, report_id):
     '''
     report = GELInterpretationReport.objects.get(id=report_id)
     if request.method == "POST":
-        proband_form = ProbandForm(request.POST, instance=report.ir_family.participant_family.proband)
-        gelir_form = GELIRForm(request.POST, instance=report)
+        proband_form = ProbandForm(request.POST, user=request.user, report=report, instance=report.ir_family.participant_family.proband)
+        gelir_form = GELIRForm(request.POST, user=request.user, instance=report)
         if proband_form.is_valid() and gelir_form.is_valid():
             proband_form.save()
             gelir_form.save()
@@ -580,7 +777,6 @@ def update_proband(request, report_id):
 
 
 @login_required
-@user_is_clinician(url='proband-view')
 def select_transcript(request, report_id, pv_id):
     '''
     Shows the transcript table and allows a user to select preferred transcript
@@ -590,16 +786,19 @@ def select_transcript(request, report_id, pv_id):
     :return: View containing list of transcripts
     '''
     proband_transcript_variants = ProbandTranscriptVariant.objects.filter(proband_variant__id=pv_id)
+    proband_variant = ProbandVariant.objects.get(id=pv_id)
     # Just selecting first selected transcript
     selected_count = 0
     for ptv in proband_transcript_variants:
         if ptv.selected:
-            if selected_count == 0:
-                pass
+            if ptv.transcript.is_preferred_transcript():
+                proband_variant.select_transcript(ptv.transcript)
+                break
             else:
-                ptv.selected = False
-                ptv.save()
+                if selected_count == 0:
+                    proband_variant.select_transcript(ptv.transcript)
             selected_count += 1
+
     report = GELInterpretationReport.objects.get(id=report_id)
     return render(request, 'gel2mdt/select_transcript.html',
                   {'proband_transcript_variants': proband_transcript_variants,
@@ -607,7 +806,6 @@ def select_transcript(request, report_id, pv_id):
 
 
 @login_required
-@user_is_clinician(url='proband-view')
 def update_transcript(request, report_id, pv_id, transcript_id):
     '''
     Updates the selected transcript
@@ -632,7 +830,7 @@ def start_mdt_view(request, sample_type):
     :param sample_type: Either raredisease or Cancer MDT will be created
     :return: View allowing users choose cases
     '''
-    mdt_instance = MDT(creator=request.user, date_of_mdt=datetime.now(), sample_type=sample_type)
+    mdt_instance = MDT(creator=request.user, date_of_mdt=datetime.datetime.now(), sample_type=sample_type)
     mdt_instance.save()
 
     return HttpResponseRedirect(f'/{sample_type}/edit_mdt/{mdt_instance.id}')
@@ -648,9 +846,9 @@ def edit_mdt(request, sample_type, mdt_id):
     :return: List of GELIR cases
     '''
 
-    gel_ir_list = GELInterpretationReport.objects.latest_cases_by_sample_type(
-        sample_type=sample_type
-    )
+    gel_ir_list = GELInterpretationReport.objects.latest_cases_by_sample_type_and_user(
+        sample_type=sample_type, username=request.user.username
+    ).prefetch_related(*['ir_family', 'ir_family__participant_family__proband'])
     mdt_instance = MDT.objects.get(id=mdt_id)
     mdt_reports = MDTReport.objects.filter(MDT=mdt_instance)
     reports_in_mdt = mdt_reports.values_list('interpretation_report', flat=True)
@@ -714,10 +912,6 @@ def mdt_view(request, mdt_id):
     :param mdt_id: MDT ID
     :return: Main MDT page
     """
-    clinician = False
-    clinicians_emails = Clinician.objects.all().values_list('email', flat=True)
-    if request.user.email in clinicians_emails:
-        clinician = True
 
     mdt_instance = MDT.objects.get(id=mdt_id)
     report_list = MDTReport.objects.filter(MDT=mdt_instance).values_list('interpretation_report', flat=True)
@@ -726,20 +920,39 @@ def mdt_view(request, mdt_id):
     proband_variants = ProbandVariant.objects.filter(interpretation_report__in=report_list)
     proband_variant_count = {}
     t3_proband_variant_count = {}
+    sv_count = {}
+    str_count = {}
+    first_check_count = 0
+    second_check_count = 0
     for report in reports:
         proband_variant_count[report.id] = 0
         t3_proband_variant_count[report.id] = 0
         pvs = ProbandVariant.objects.filter(interpretation_report=report)
+        proband_sv_count = ProbandSV.objects.filter(interpretation_report=report).count()
+        sv_count[report.id] = proband_sv_count
+        proband_str_count = ProbandSTR.objects.filter(interpretation_report=report).count()
+        str_count[report.id] = proband_str_count
         for pv in pvs:
             if pv.pvflag_set.all() and pv.max_tier == None:
                 proband_variant_count[report.id] += 1
-            if pv.max_tier:
+            if pv.max_tier or pv.max_tier == 0:
                 if pv.pvflag_set.all() or pv.max_tier < 3:
                     proband_variant_count[report.id] += 1
                 else:
                     t3_proband_variant_count[report.id] += 1
+        if report.second_check:
+            second_check_count += 1
+        elif report.first_check:
+            first_check_count += 1
+    try:
+        first_check_percent = (first_check_count/len(reports)) * 100
+        second_check_percent = (second_check_count/len(reports)) * 100
+    except ZeroDivisionError:
+        first_check_percent = 0
+        second_check_percent = 0
 
-    mdt_form = MdtForm(instance=mdt_instance)
+    mdt_form = MdtForm(instance=mdt_instance, user=request.user)
+    sent_to_clinican_form = MdtSentToClinicianForm(instance=mdt_instance, user=request.user)
     clinicians = Clinician.objects.filter(mdt=mdt_id).values_list('name', flat=True)
     clinical_scientists = ClinicalScientist.objects.filter(mdt=mdt_id).values_list('name', flat=True)
     other_staff = OtherStaff.objects.filter(mdt=mdt_id).values_list('name', flat=True)
@@ -751,23 +964,29 @@ def mdt_view(request, mdt_id):
             mdt_form.fields[field].widget.attrs['disabled'] = True
 
     if request.method == 'POST':
-        mdt_form = MdtForm(request.POST, instance=mdt_instance)
-
+        mdt_form = MdtForm(request.POST, instance=mdt_instance, user=request.user)
+        sent_to_clinican_form = MdtSentToClinicianForm(request.POST, user=request.user, instance=mdt_instance)
         if mdt_form.is_valid():
             mdt_form.save()
-            messages.add_message(request, 25, 'MDT Updated')
+        if sent_to_clinican_form.is_valid():
+            sent_to_clinican_form.save()
+        messages.add_message(request, 25, 'MDT Updated')
 
         return HttpResponseRedirect(f'/mdt_view/{mdt_id}')
     request.session['mdt_id'] = mdt_id
     return render(request, 'gel2mdt/mdt_view.html', {'proband_variants': proband_variants,
                                                       'proband_variant_count': proband_variant_count,
+                                                     'sv_count': sv_count,
+                                                     'str_count': str_count,
                                                      't3_proband_variant_count': t3_proband_variant_count,
+                                                     'first_check_percent': first_check_percent,
+                                                     'second_check_percent': second_check_percent,
                                                       'reports': reports,
                                                       'mdt_form': mdt_form,
+                                                      'sent_to_clinican_form' : sent_to_clinican_form,
                                                       'mdt_id': mdt_id,
                                                       'attendees': attendees,
-                                                     'sample_type': mdt_instance.sample_type,
-                                                     'clinician': clinician})
+                                                     'sample_type': mdt_instance.sample_type})
 
 
 @login_required
@@ -780,18 +999,17 @@ def mdt_proband_view(request, mdt_id, pk, important):
     :param important: Either 1 or 0; Whether to display T3 or non T3 variants
     :return:
     '''
-    clinician = False
-    clinicians_emails = Clinician.objects.all().values_list('email', flat=True)
-    if request.user.email in clinicians_emails:
-        clinician = True
     mdt_instance = MDT.objects.get(id=mdt_id)
     report = GELInterpretationReport.objects.get(id=pk)
     proband_variants = []
     proband_variants_all = ProbandVariant.objects.filter(interpretation_report=report)
     for pv in proband_variants_all:
         if important ==1:
-            if pv.pvflag_set.all() or pv.max_tier < 3:
+            if pv.pvflag_set.all() and pv.max_tier == None:
                 proband_variants.append(pv)
+            if pv.max_tier or pv.max_tier == 0:
+                if pv.pvflag_set.all() or pv.max_tier < 3:
+                    proband_variants.append(pv)
         else:
             if not pv.pvflag_set.all():
                 proband_variants.append(pv)
@@ -810,11 +1028,17 @@ def mdt_proband_view(request, mdt_id, pk, important):
         VariantForm = modelformset_factory(CancerReport, form=CancerMDTForm, extra=0)
     variant_formset = VariantForm(queryset=proband_variant_reports)
 
-    proband_form = ProbandMDTForm(instance=report.ir_family.participant_family.proband)
-    gelir_form = GELIRMDTForm(instance=report)
+    proband_form = ProbandMDTForm(instance=report.ir_family.participant_family.proband, user=request.user)
+    gelir_form = GELIRMDTForm(instance=report, user=request.user)
     panels = InterpretationReportFamilyPanel.objects.filter(ir_family=report.ir_family)
 
-    if mdt_instance.status == "C":
+    enable_form = False
+    for group in request.user.groups.all():
+        if hasattr(group, 'grouppermissions'):
+            if group.grouppermissions.can_edit_mdt:
+                enable_form = True
+
+    if mdt_instance.status == "C" or not enable_form:
         for form in variant_formset.forms:
             for field in form.__dict__["fields"]:
                 form.fields[field].widget.attrs['readonly'] = True
@@ -825,8 +1049,8 @@ def mdt_proband_view(request, mdt_id, pk, important):
 
     if request.method == 'POST':
         variant_formset = VariantForm(request.POST)
-        proband_form = ProbandMDTForm(request.POST, instance=report.ir_family.participant_family.proband)
-        gelir_form = GELIRMDTForm(request.POST, instance=report)
+        proband_form = ProbandMDTForm(request.POST, user=request.user, instance=report.ir_family.participant_family.proband)
+        gelir_form = GELIRMDTForm(request.POST, instance=report, user=request.user)
         if variant_formset.is_valid() and proband_form.is_valid() and gelir_form.is_valid():
             variant_formset.save()
             for form in variant_formset:
@@ -852,9 +1076,140 @@ def mdt_proband_view(request, mdt_id, pk, important):
         'panels': panels,
         'sample_type':report.sample_type,
         'gelir_form':gelir_form,
-        'clinician': clinician
     })
 
+@login_required
+def mdt_cnv_view(request, mdt_id, pk):
+    '''
+    MDT proband view where users can edit proband CNV specific questions at MDT
+    :param request:
+    :param mdt_id: MDT instance id
+    :param pk: GEL Interpretation report id
+    :return:
+    '''
+    mdt_instance = MDT.objects.get(id=mdt_id)
+    report = GELInterpretationReport.objects.get(id=pk)
+    proband_svs = ProbandSV.objects.filter(interpretation_report=report)
+
+    for pv in proband_svs:
+        if mdt_instance.sample_type == 'raredisease':
+            pv.create_rare_disease_report()
+
+    if mdt_instance.sample_type == 'raredisease':
+        proband_sv_reports = RareDiseaseReport.objects.filter(proband_sv__in=proband_svs)
+        VariantForm = modelformset_factory(RareDiseaseReport, form=RareDiseaseMDTForm, extra=0)
+    variant_formset = VariantForm(queryset=proband_sv_reports)
+
+    proband_form = ProbandMDTForm(instance=report.ir_family.participant_family.proband, user=request.user)
+    gelir_form = GELIRMDTForm(instance=report, user=request.user)
+    panels = InterpretationReportFamilyPanel.objects.filter(ir_family=report.ir_family)
+
+    if mdt_instance.status == "C":
+        for form in variant_formset.forms:
+            for field in form.__dict__["fields"]:
+                form.fields[field].widget.attrs['readonly'] = True
+                form.fields[field].widget.attrs['disabled'] = True
+        for field in proband_form.__dict__["fields"]:
+            proband_form.fields[field].widget.attrs['readonly'] = True
+            proband_form.fields[field].widget.attrs['disabled'] = True
+
+    if request.method == 'POST':
+        variant_formset = VariantForm(request.POST)
+        proband_form = ProbandMDTForm(request.POST, instance=report.ir_family.participant_family.proband, user=request.user)
+        gelir_form = GELIRMDTForm(request.POST, instance=report, user=request.user)
+        if variant_formset.is_valid() and proband_form.is_valid() and gelir_form.is_valid():
+            variant_formset.save()
+            for form in variant_formset:
+                pv = form.instance.proband_sv
+                pv.validation_status = form.cleaned_data['requires_validation']
+                pv.save()
+            proband_form.save()
+            gelir_form.save()
+            messages.add_message(request, 25, 'Proband Updated')
+
+        return HttpResponseRedirect(f'/mdt_cnv_view/{mdt_id}/{pk}/')
+
+    for form in variant_formset:
+        p_sv = form.instance.proband_sv
+        form.initial["requires_validation"] = p_sv.validation_status
+    return render(request, 'gel2mdt/mdt_cnv_view.html', {
+        'proband_svs': proband_svs,
+        'report': report,
+        'mdt_id': mdt_id,
+        'mdt_instance': mdt_instance,
+        'proband_form': proband_form,
+        'variant_formset': variant_formset,
+        'panels': panels,
+        'sample_type':report.sample_type,
+        'gelir_form':gelir_form,
+    })
+
+@login_required
+def mdt_str_view(request, mdt_id, pk):
+    '''
+    MDT proband view where users can edit proband CNV specific questions at MDT
+    :param request:
+    :param mdt_id: MDT instance id
+    :param pk: GEL Interpretation report id
+    :return:
+    '''
+
+    mdt_instance = MDT.objects.get(id=mdt_id)
+    report = GELInterpretationReport.objects.get(id=pk)
+    proband_strs = ProbandSTR.objects.filter(interpretation_report=report)
+
+    for pv in proband_strs:
+        if mdt_instance.sample_type == 'raredisease':
+            pv.create_rare_disease_report()
+
+    if mdt_instance.sample_type == 'raredisease':
+        proband_str_reports = RareDiseaseReport.objects.filter(proband_str__in=proband_strs)
+        VariantForm = modelformset_factory(RareDiseaseReport, form=RareDiseaseMDTForm, extra=0)
+    variant_formset = VariantForm(queryset=proband_str_reports)
+
+    proband_form = ProbandMDTForm(instance=report.ir_family.participant_family.proband, user=request.user)
+    gelir_form = GELIRMDTForm(instance=report, user=request.user)
+    panels = InterpretationReportFamilyPanel.objects.filter(ir_family=report.ir_family)
+
+    if mdt_instance.status == "C":
+        for form in variant_formset.forms:
+            for field in form.__dict__["fields"]:
+                form.fields[field].widget.attrs['readonly'] = True
+                form.fields[field].widget.attrs['disabled'] = True
+        for field in proband_form.__dict__["fields"]:
+            proband_form.fields[field].widget.attrs['readonly'] = True
+            proband_form.fields[field].widget.attrs['disabled'] = True
+
+    if request.method == 'POST':
+        variant_formset = VariantForm(request.POST)
+        proband_form = ProbandMDTForm(request.POST, instance=report.ir_family.participant_family.proband, user=request.user)
+        gelir_form = GELIRMDTForm(request.POST, instance=report, user=request.user)
+        if variant_formset.is_valid() and proband_form.is_valid() and gelir_form.is_valid():
+            variant_formset.save()
+            for form in variant_formset:
+                pv = form.instance.proband_str
+                pv.validation_status = form.cleaned_data['requires_validation']
+                pv.save()
+            proband_form.save()
+            gelir_form.save()
+            messages.add_message(request, 25, 'Proband Updated')
+
+        return HttpResponseRedirect(f'/mdt_str_view/{mdt_id}/{pk}/')
+
+    for form in variant_formset:
+        p_str = form.instance.proband_str
+        form.initial["requires_validation"] = p_str.validation_status
+    return render(request, 'gel2mdt/mdt_str_view.html', {
+        'proband_strs': proband_strs,
+        'report': report,
+        'mdt_id': mdt_id,
+        'mdt_instance': mdt_instance,
+        'proband_form': proband_form,
+        'variant_formset': variant_formset,
+        'panels': panels,
+        'sample_type':report.sample_type,
+        'gelir_form':gelir_form,
+    })
 
 @login_required
 def edit_mdt_proband(request, report_id):
@@ -868,6 +1223,7 @@ def edit_mdt_proband(request, report_id):
     report = GELInterpretationReport.objects.get(id=report_id)
     if request.method == 'POST':
         proband_form = ProbandMDTForm(request.POST,
+                                      user=request.user,
                                       instance=report.ir_family.participant_family.proband)
         mdt_id = request.session.get('mdt_id')
         if proband_form.is_valid():
@@ -878,27 +1234,52 @@ def edit_mdt_proband(request, report_id):
             reports = GELInterpretationReport.objects.filter(id__in=report_list)
             proband_variant_count = {}
             t3_proband_variant_count = {}
+            sv_count = {}
+            str_count = {}
+            first_check_count = 0
+            second_check_count = 0
             for report in reports:
                 proband_variant_count[report.id] = 0
                 t3_proband_variant_count[report.id] = 0
                 pvs = ProbandVariant.objects.filter(interpretation_report=report)
+                proband_sv_count = ProbandSV.objects.filter(interpretation_report=report).count()
+                sv_count[report.id] = proband_sv_count
+                proband_str_count = ProbandSTR.objects.filter(interpretation_report=report).count()
+                str_count[report.id] = proband_str_count
                 for pv in pvs:
-                    if pv.pvflag_set.all() or pv.max_tier < 3:
+                    if pv.pvflag_set.all() and pv.max_tier is None:
                         proband_variant_count[report.id] += 1
-                    else:
-                        t3_proband_variant_count[report.id] += 1
+                    if pv.max_tier or pv.max_tier == 0:
+                        if pv.pvflag_set.all() or pv.max_tier < 3:
+                            proband_variant_count[report.id] += 1
+                        else:
+                            t3_proband_variant_count[report.id] += 1
+                if report.second_check:
+                    second_check_count += 1
+                elif report.first_check:
+                    first_check_count += 1
+            try:
+                first_check_percent = (first_check_count / len(reports)) * 100
+                second_check_percent = (second_check_count / len(reports)) * 100
+            except ZeroDivisionError:
+                first_check_percent = 0
+                second_check_percent = 0
 
             data['html_mdt_list'] = render_to_string('gel2mdt/includes/mdt_proband_table.html', {
                 'reports': reports,
                 'proband_variant_count': proband_variant_count,
-                't3_proband_variant_count': t3_proband_variant_count,
-                'mdt_id': request.session['mdt_id']
+                'mdt_id': request.session['mdt_id'],
+                'sv_count': sv_count,
+                 'str_count': str_count,
+                 't3_proband_variant_count': t3_proband_variant_count,
+                 'first_check_percent': first_check_percent,
+                 'second_check_percent': second_check_percent,
             })
         else:
             data['form_is_valid'] = False
             print(proband_form.errors)
     else:
-        proband_form = ProbandMDTForm(instance=report.ir_family.participant_family.proband)
+        proband_form = ProbandMDTForm(instance=report.ir_family.participant_family.proband, user=request.user)
 
     context = {'proband_form': proband_form,
                'report': report}
@@ -919,17 +1300,20 @@ def recent_mdts(request, sample_type):
     :param sample_type: Either cancer or raredisease
     :return: A list of cancer or raredisease MDTs
     '''
-    clinician = False
-    clinicians_emails = Clinician.objects.all().values_list('email', flat=True)
-    if request.user.email in clinicians_emails:
-        clinician = True
-    recent_mdt = list(MDT.objects.filter(sample_type=sample_type).order_by('-date_of_mdt'))
+    recent_mdt = MDT.objects.filter(sample_type=sample_type).order_by('-date_of_mdt')
+    recent_mdt = list(recent_mdt)
+
     config_dict = load_config.LoadConfig().load()
     # Need to get which probands were in MDT
     probands_in_mdt = {}
+    first_check_in_mdt = {}
+    second_check_in_mdt = {}
+    mdt_sent_to_clinician = {}
     for mdt in recent_mdt:
         probands_in_mdt[mdt.id] = []
         report_list = MDTReport.objects.filter(MDT=mdt.id)
+        first_check_count = 0
+        second_check_count = 0
         for report in report_list:
             if config_dict['cip_as_id'] == 'True':
                 probands_in_mdt[mdt.id].append((report.interpretation_report.id,
@@ -937,11 +1321,26 @@ def recent_mdts(request, sample_type):
             else:
                 probands_in_mdt[mdt.id].append((report.interpretation_report.id,
                                             report.interpretation_report.ir_family.participant_family.proband.gel_id))
+            if report.interpretation_report.second_check:
+                second_check_count += 1
+            elif report.interpretation_report.first_check:
+                first_check_count += 1
+        try:
+            first_check_percent = (first_check_count/len(report_list)) * 100
+            second_check_percent = (second_check_count/len(report_list)) * 100
+        except ZeroDivisionError:
+            first_check_percent = 0
+            second_check_percent = 0
+        first_check_in_mdt[mdt.id] = first_check_percent
+        second_check_in_mdt[mdt.id] = second_check_percent
+        mdt_sent_to_clinician[mdt.id] = mdt.sent_to_clinician
 
     return render(request, 'gel2mdt/recent_mdts.html', {'recent_mdt': recent_mdt,
                                                         'probands_in_mdt': probands_in_mdt,
-                                                        'sample_type': sample_type,
-                                                        'clinician': clinician})
+                                                        'first_check_in_mdt': first_check_in_mdt,
+                                                        'second_check_in_mdt': second_check_in_mdt,
+                                                        'mdt_sent_to_clinician': mdt_sent_to_clinician,
+                                                        'sample_type': sample_type})
 
 
 @login_required
@@ -1101,11 +1500,16 @@ def export_mdt(request, mdt_id):
     if request.method == "POST":
         mdt_instance = MDT.objects.get(id=mdt_id)
         mdt_reports = MDTReport.objects.filter(MDT=mdt_instance)
-        response = HttpResponse(content_type='text/csv')
-        response['Content-Disposition'] = 'attachment; filename=MDT_{}.csv'.format(mdt_id)
-        writer = csv.writer(response)
-        writer = write_mdt_export(writer, mdt_instance, mdt_reports)
-        return response
+        try:
+            xlsx = write_mdt_export(mdt_instance, mdt_reports)
+            response = HttpResponse(
+                xlsx,
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            response['Content-Disposition'] = 'attachment; filename=MDT_{}.xlsx'.format(mdt_id)
+            return response
+        except ValueError as error:
+            messages.add_message(request, 40, error)
+            return HttpResponseRedirect(f'/mdt_view/{mdt_id}')
 
 
 @login_required
@@ -1117,23 +1521,28 @@ def export_mdt_outcome_form(request, report_id):
     :return: DOCX format file
     '''
     report = GELInterpretationReport.objects.get(id=report_id)
-    document, mdt = write_mdt_outcome_template(report)
-    f = BytesIO()
-    document.save(f)
-    length = f.tell()
-    f.seek(0)
-    response = HttpResponse(
-        f.getvalue(),
-        content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    )
+    try:
+        document, mdt = write_mdt_outcome_template(report)
+        f = BytesIO()
+        document.save(f)
+        length = f.tell()
+        f.seek(0)
+        response = HttpResponse(
+            f.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        )
 
-    filename = '{}_{}_{}_{}.docx'.format(report.ir_family.participant_family.proband.surname,
-                                         report.ir_family.participant_family.proband.forename,
-                                         report.ir_family.ir_family_id,
-                                         mdt.date_of_mdt.date())
-    response['Content-Disposition'] = 'attachment; filename=' + filename
-    response['Content-Length'] = length
-    return response
+        filename = '{}_{}_{}_{}.docx'.format(report.ir_family.participant_family.proband.surname,
+                                             report.ir_family.participant_family.proband.forename,
+                                             report.ir_family.ir_family_id,
+                                             mdt.date_of_mdt.date())
+        response['Content-Disposition'] = 'attachment; filename=' + filename
+        response['Content-Length'] = length
+        return response
+    except ValueError as error:
+        messages.add_message(request, 40, error)
+        return HttpResponseRedirect(request.META.get('HTTP_REFERER'))
+
 
 @login_required
 def export_gtab_template(request, report_id):
@@ -1288,7 +1697,7 @@ def case_alert(request, sample_type):
     gel_reports = GELInterpretationReport.objects.latest_cases_by_sample_type(
         sample_type=sample_type).prefetch_related('ir_family__participant_family__proband')
     matching_cases = {}
-    case_alert_form = AddCaseAlert()
+    case_alert_form = AddCaseAlert(user=request.user)
     for case in case_alerts:
         matching_cases[case.id] = []
         for report in gel_reports:
@@ -1308,7 +1717,7 @@ def case_alert(request, sample_type):
 @login_required
 def add_case_alert(request):
     if request.method == 'POST':
-        case_alert_form = AddCaseAlert(request.POST)
+        case_alert_form = AddCaseAlert(request.POST, user=request.user)
         if case_alert_form.is_valid():
             case_alert_form.save()
             messages.add_message(request, 25, 'Case Added!')
@@ -1321,9 +1730,9 @@ def add_case_alert(request):
 def edit_case_alert(request, case_alert_id):
     data = {}
     case_alert_instance = CaseAlert.objects.get(id=case_alert_id)
-    case_alert_form = AddCaseAlert(instance=case_alert_instance)
+    case_alert_form = AddCaseAlert(user=request.user, instance=case_alert_instance)
     if request.method == 'POST':
-        case_alert_form = AddCaseAlert(request.POST, instance=case_alert_instance)
+        case_alert_form = AddCaseAlert(request.POST, user=request.user, instance=case_alert_instance)
         if case_alert_form.is_valid():
             case_alert_form.save()
             data['form_is_valid'] = True
@@ -1341,3 +1750,56 @@ def delete_case_alert(request, case_alert_id):
     case_alert_instance.delete()
     messages.add_message(request, 25, 'Alert Deleted')
     return redirect('case-alert', sample_type=sample_type)
+
+
+@login_required
+def edit_preferred_transcript(request, geneid, genome_build_id):
+    gene = Gene.objects.get(id=geneid)
+    genome_assembly = ToolOrAssemblyVersion.objects.filter(id=genome_build_id).first()
+    transcripts = Transcript.objects.filter(gene=gene, genome_assembly=genome_assembly)
+    return render(request, 'gel2mdt/select_preferred_transcript.html', {'transcripts': transcripts,
+                                                                        'gene': gene,
+                                                                        'genome_assembly': genome_assembly})
+
+
+@login_required
+def update_preferred_transcript(request, geneid, genome_build_id, transcript_id):
+    '''
+    Updates the selected transcript
+    :param request:
+    :param transcript_id: Transcript id of the selected transcript
+    :return: Select Transcript view
+    '''
+    transcript = Transcript.objects.get(id=transcript_id)
+    gene = Gene.objects.get(id=geneid)
+    genome_build = ToolOrAssemblyVersion.objects.get(id=genome_build_id)
+    PreferredTranscript.objects.update_or_create(gene=gene,
+                                                 genome_assembly=genome_build,
+                                                 defaults={'transcript': transcript})
+    messages.add_message(request, 25, 'Preferred Transcript Updated')
+    return HttpResponseRedirect(f'/edit_preferred_transcript/{geneid}/{genome_build_id}')
+
+
+@login_required
+def delete_comment(request, comment_id):
+    comment = CaseComment.objects.get(id=comment_id)
+    report = comment.interpretation_report
+    comment.delete()
+    return HttpResponseRedirect(f'/proband/{report.id}')
+
+
+@login_required
+def edit_comment(request, comment_id):
+    data = {}
+    comment_instance = CaseComment.objects.get(id=comment_id)
+    edit_comment_form = AddCommentForm(instance=comment_instance, user=request.user)
+    if request.method == 'POST':
+        edit_comment_form = AddCommentForm(request.POST, user=request.user, instance=comment_instance)
+        if edit_comment_form.is_valid():
+            edit_comment_form.save()
+            data['form_is_valid'] = True
+        return redirect('proband-view', report_id=comment_instance.interpretation_report.id)
+    context = {'edit_comment_form': edit_comment_form, 'comment_instance': comment_instance}
+    html_form = render_to_string('gel2mdt/modals/comment_modal.html', context, request=request)
+    data['html_form'] = html_form
+    return JsonResponse(data)

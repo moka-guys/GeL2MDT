@@ -39,6 +39,44 @@ from bokeh.plotting import figure
 from django.core.mail import EmailMessage
 from reversion.models import Version, Revision
 from protocols.reports_6_0_0 import InterpretedGenome, InterpretationRequestRD, CancerInterpretationRequest, ClinicalReport
+from django.db.utils import ProgrammingError, OperationalError
+
+
+def create_admin_group():
+    try:
+        group, created = Group.objects.get_or_create(name='ADMIN GROUP')
+        if not hasattr(group, 'grouppermissions'):
+            group_permissions = GroupPermissions(group=group)
+            group_permissions.save()
+        permissions = group.grouppermissions
+        permissions.cancer = True
+        permissions.raredisease = True
+        permissions.can_view_pvs = True
+        permissions.can_view_svs = True
+        permissions.can_view_strs = True
+        permissions.can_select_update_transcript = True
+        permissions.pull_t3_variants = True
+        permissions.can_edit_proband = True
+        permissions.can_edit_completed_proband = True
+        permissions.can_edit_gelir = True
+        permissions.can_edit_mdt = True
+        permissions.can_get_gel_report = True
+        permissions.can_edit_relative = True
+        permissions.can_edit_clinical_questions = True
+        permissions.start_mdt = True
+        permissions.can_edit_case_alert = True
+        permissions.can_edit_validation_list = True
+        permissions.save()
+    except (ProgrammingError, OperationalError):
+        pass # Models probably don't exist yet
+    try:
+        gmc_list = Proband.objects.all().values_list('gmc', flat=True)
+        gmc_list = set(gmc_list)
+        for gmc in gmc_list:
+            if gmc:
+                GMC.objects.get_or_create(name=gmc)
+    except (ProgrammingError, OperationalError):
+        pass # Models probably don't exist yet
 
 
 def get_gel_content(ir, ir_version):
@@ -50,9 +88,8 @@ def get_gel_content(ir, ir_version):
     :return: Beatitful soup version of the report
     '''
     # otherwise get uname and password from a file
-
     interpretation_reponse = PollAPI(
-        "cip_api", f'interpretation-request/{ir}/{ir_version}')
+        "cip_api", f'interpretation-request/{ir}/{ir_version}/')
     interp_json = interpretation_reponse.get_json_response()
     analysis_versions = []
     latest = None
@@ -64,32 +101,29 @@ def get_gel_content(ir, ir_version):
         except ValueError as e:
             latest = 1
 
-    try:
-        if latest == 1:
-            print('latest',  1)
-            html_report = PollAPI(
-                "cip_api_for_report", f"ClinicalReport/{ir}/{ir_version}/{latest}"
-            )
-            gel_content = html_report.get_json_response(content=True)
-        else:
-            while latest > 0:
-                print('latest', latest)
-                html_report = PollAPI(
-                    "cip_api_for_report", f"ClinicalReport/{ir}/{ir_version}/{latest}"
-                )
-                gel_content = html_report.get_json_response(content=True)
-                gel_json_content = json.loads(gel_content)
-                if gel_json_content['detail'].startswith('Not found') or gel_json_content['detail'].startswith(
-                        'Method \"GET\" not allowed'):
-                    latest -= 1
+    loop_over_reports = True
+    while loop_over_reports:
+        print('latest', latest)
+        html_report = PollAPI(
+            "cip_api", f"clinical-report/{ir}/{ir_version}/{latest}"
+        )
+        gel_content = html_report.get_json_response(content=True)
+        try:
+            gel_json_content = json.loads(gel_content)
+            if gel_json_content['detail'].startswith('Not found') or gel_json_content['detail'].startswith(
+                    'Method \"GET\" not allowed'):
+                if latest == 1:
+                    raise ValueError('No Clinical Report found for this case')
                 else:
-                    break
-    except JSONDecodeError as e:
-        print('JSONDecodeError')
+                    latest -= 1
+            else:
+                loop_over_reports = False
+        except JSONDecodeError:
+            loop_over_reports = False
 
     analysis_panels = {}
 
-    panel_app_panel_query_version = 'https://bioinfo.extge.co.uk/crowdsourcing/WebServices/get_panel/{panelhash}/?version={version}'
+    panel_app_panel_query_version = 'https://panelapp.genomicsengland.co.uk/api/v1/panels/{panelhash}/?version={version}'
     if 'pedigree' in interp_json['interpretation_request_data']['json_request']:
         if interp_json['interpretation_request_data']['json_request']['pedigree']['analysisPanels']:
             for panel_section in interp_json['interpretation_request_data']['json_request']['pedigree']['analysisPanels']:
@@ -98,9 +132,12 @@ def get_gel_content(ir, ir_version):
                 analysis_panels[panel_name] = {}
                 panel_details = requests.get(panel_app_panel_query_version.format(panelhash=panel_name, version=version),
                                              verify=False).json()
-                analysis_panels[panel_name][panel_details['result']['SpecificDiseaseName']] = []
-                for gene in panel_details['result']['Genes']:
-                    analysis_panels[panel_name][panel_details['result']['SpecificDiseaseName']].append(gene['GeneSymbol'])
+                analysis_panels[panel_name][panel_details['name']] = []
+                try:
+                    for gene in panel_details['genes']:
+                        analysis_panels[panel_name][panel_details['name']].append(gene['gene_data']['gene_symbol'])
+                except KeyError:
+                    pass
 
     gene_panels = {}
     for panel, details in analysis_panels.items():
@@ -167,6 +204,7 @@ def get_gel_content(ir, ir_version):
     gel_content = gel_content.prettify()
     return gel_content
 
+
 def panel_app(gene_panel, gp_version):
     '''
     Returns the list of genes associated with a panel in a dictionary which are then placed in the GEL clinical report
@@ -198,115 +236,6 @@ def update_for_t3(report_id):
                       sample=report.ir_family.participant_family.proband.gel_id)
 
 @task
-def case_alert_email():
-    '''
-    Utility function designed to be run with celery. Emails GELTeam nightly about CaseAlert cases
-    :param report_id: GEL InterpretationReport ID
-    :return: Nothing
-    '''
-    sample_types = {'raredisease': False, 'cancer': False}
-    matching_cases = {}
-    for s_type in sample_types:
-        case_alerts = CaseAlert.objects.filter(sample_type=s_type)
-        gel_reports = GELInterpretationReport.objects.latest_cases_by_sample_type(
-            sample_type=s_type).prefetch_related('ir_family__participant_family__proband')
-        matching_cases[s_type] = {}
-        for case in case_alerts:
-            matching_cases[s_type][case.id] = []
-            for report in gel_reports:
-                try:
-                    if report.ir_family.participant_family.proband.gel_id == str(case.gel_id):
-                        matching_cases[s_type][case.id].append((report.id,
-                                                                report.ir_family.ir_family_id))
-                    sample_types[s_type] = True
-                except Proband.DoesNotExist:
-                    pass
-
-    text_content = ''
-    if sample_types['cancer'] or sample_types['raredisease']:
-        for s_type in sample_types:
-            if matching_cases[s_type]:
-                text_content += f'{s_type.title()} Case Alert:\n'
-                for case in matching_cases[s_type]:
-                    case_alert = CaseAlert.objects.get(id=case)
-                    if matching_cases[s_type][case]:
-                        text_content += f'Case {case_alert.gel_id} with CIP-ID of {matching_cases[s_type][case][0][1]} ' \
-                                        f'has been added to the database. CaseAlert comment: {case_alert.comment}\n'
-        subject, from_email, to = f'GeL2MDT CaseAlert', 'bioinformatics@gosh.nhs.uk', 'GELTeam@gosh.nhs.uk'
-        msg = EmailMessage(subject, text_content, from_email, [to])
-        try:
-            msg.send()
-        except Exception as e:
-            pass
-
-@task
-def update_report_email():
-    '''
-    Utility function which sends emails to GELTeam about last weeks updates
-    :return:
-    '''
-    from datetime import date
-    from django.db.models import Sum
-    text_content = ''
-    today = date.today()
-    import datetime
-    week_ago = today - datetime.timedelta(days=7)
-    for i, sample_type in enumerate(['raredisease', 'cancer']):
-        listupdates = ListUpdate.objects.filter(update_time__gte=week_ago).filter(sample_type=sample_type)
-        total_added = listupdates.aggregate(Sum('cases_added'))['cases_added__sum']
-        if total_added > 0:
-            text_content += f'{sample_type.title()} Update Report:\n\nTotal number of cases added: {total_added}\n\n'
-            text_content += f'Summary of Cases Added:\n'
-            text_content += f'CIPID\tGELID\tForename\tSurname\tClinician\tCenter\n'
-            for update in listupdates:
-                reports_added = update.reports_added.all()
-                for report in reports_added:
-                    text_content += f'{report.ir_family.ir_family_id}\t' \
-                                    f'{report.ir_family.participant_family.proband.gel_id}\t' \
-                                    f'{report.ir_family.participant_family.proband.forename}\t' \
-                                    f'{report.ir_family.participant_family.proband.surname}\t' \
-                                    f'{report.ir_family.participant_family.clinician}\t' \
-                                    f'{report.ir_family.participant_family.proband.gmc}\n'
-        else:
-            text_content += f'No new cases were added for {sample_type.title()}\n'
-        text_content += '\n----------------------------------------------------------------------------------------\n\n'
-
-    listupdates = ListUpdate.objects.filter(update_time__gte=date.today())
-    if all(listupdates.values_list('success', flat=True)) and text_content:
-        subject, from_email, to = 'GeL2MDT Weekly Update Report', 'bioinformatics@gosh.nhs.uk', 'bioinformatics@gosh.nhs.uk'
-        msg = EmailMessage(subject, text_content, from_email, [to])
-        try:
-            msg.send()
-        except Exception as e:
-            pass
-
-
-@task
-def listupdate_email():
-    '''
-    Utility function which sends emails to admin about last nights update
-    :return:
-    '''
-    from datetime import date
-    send = False
-    bioinfo_content = 'Sample Type\tUpdate Time\tNo. Cases Added\tNo. Cases Updated\tError\n'
-    for i, sample_type in enumerate(['raredisease', 'cancer']):
-        listupdates = ListUpdate.objects.filter(update_time__gte=date.today()).filter(sample_type=sample_type)
-        if listupdates:
-            send = True
-        for update in listupdates:
-            bioinfo_content += f'{update.sample_type}\t{update.update_time}' \
-                               f'\t{update.cases_added}\t{update.cases_updated}\t{update.error}\n'
-    if send:
-        subject, from_email, to = 'GeL2MDT ListUpdate', 'bioinformatics@gosh.nhs.uk', \
-                                  'bioinformatics@gosh.nhs.uk'
-        msg = EmailMessage(subject, bioinfo_content, from_email, [to])
-        try:
-            msg.send()
-        except Exception:
-            pass
-
-@task
 def update_cases():
     '''
     Utility function designed to be run with celery as a replacement for a cronjob. Should be run every day to update
@@ -330,13 +259,14 @@ class VariantAdder(object):
         self.gene_entries = []
         self.transcript_entries = []
         self.proband_variant = None
-
+        self.pv_flag = None
         self.run_vep()
         self.insert_genes()
         self.insert_transcripts()
         self.insert_transcript_variants()
         self.insert_proband_variant()
         self.insert_proband_transcript_variant()
+        self.add_pv_flag()
 
     def run_vep(self):
         self.transcripts = run_vep_batch.generate_transcripts(self.variants)
@@ -427,6 +357,11 @@ class VariantAdder(object):
                                                                             proband_variant=transcript.proband_variant_entry,
                                                                      defaults={"selected": transcript.transcript_entry.canonical_transcript,
                                                                                 "effect": transcript.proband_transcript_variant_effect})
+
+    def add_pv_flag(self):
+        self.pv_flag, created = PVFlag.objects.get_or_create(proband_variant=self.proband_variant,
+                                                             flag_name='Manually Added')
+
 
 class UpdateDemographics(object):
     '''
@@ -676,6 +611,7 @@ def create_bokeh_barplot(names, values, title):
     plot.legend.orientation = "horizontal"
     plot.legend.location = "top_center"
     return plot
+
 
 class ReportHistoryFormatter:
     def __init__(self, report):

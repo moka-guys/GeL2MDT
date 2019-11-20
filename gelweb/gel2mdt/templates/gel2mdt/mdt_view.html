@@ -24,26 +24,6 @@ SOFTWARE.
 {% load static %}
 
 
-{% if clinician %}
-    {% block tabs %}
-
-            <ul class="nav navbar-nav">
-                        {% if sample_type == 'cancer' %}
-                            <li><a href="{% url 'cancer-main' %}"><i class="fas fa-home"></i></span> Cases</a></li>
-                            </ul>
-                        {% elif sample_type == 'raredisease' %}
-                            <li><a href="{% url 'rare-disease-main' %}"><i class="fas fa-home"></i></span> Cases</a></li>
-                            </ul>
-                        {% endif %}
-
-
-                    <ul class="nav navbar-nav">
-                        <li><a href="{% url 'recent-mdt' sample_type=sample_type %}" ><i class="fas fa-history"></i> Recent MDTs</a></li>
-                        </ul>
-{% endblock %}
-    {% endif %}
-
-
 {% block content %}
 {% load gel2mdt_extras %}
 
@@ -66,19 +46,89 @@ SOFTWARE.
      <form action="/select_attendees_for_mdt/{{ mdt_id }}" role="form">
         {% csrf_token %} {% bootstrap_button "Add Attendees" button_type="submit" button_class="btn-primary" %}
     </form>
+    {% else %}
+    <form action="/export_mdt/{{ mdt_id }}" role="form" method="post">
+        {% csrf_token %} {% bootstrap_button "Export MDT" button_type="submit" button_class="btn-info" %}
+    </form>
     {% endif %}
+
 </div>
 
 <br>
-<div  class="container-fluid">
 
+
+<div  class="container-fluid">
+    <div class=row>
+        <div class="col-md-12">
+            <form role="form" method="post" enctype="multipart/form-data">
+                                {% csrf_token %}
+            <div class="col-md-3">
+                <div id="tracking" class="tab-pane fade in active">
+                    <div class="panel panel-default" >
+                        <div class="panel-heading">MDT Tracking</div>
+                        <div class="panel-body">
+                            <div class="col-md-12">
+                                {% bootstrap_label "First check / Second check" %}
+                                <div class="progress">
+                                    <div class="progress-bar progress-bar-warning" style="width: {{first_check_percent}}%">
+                                        <strong>{{first_check_percent}}</strong>
+                                    </div>
+                                    <div class="progress-bar progress-bar-success progress-bar-striped" style="width: {{second_check_percent}}%">
+                                        <strong>{{second_check_percent}}</strong>
+                                    </div>
+                                </div>
+                            </div>
+
+
+                                 <div class="col-md-9">
+                                    {{sent_to_clinican_form.as_ul}}
+                                </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+                    <div class="col-md-9">
+
+                         <div class="panel panel-default">
+                            <div class="panel-heading">MDT Information</div>
+                            <div class="panel-body" style="text-align:center">
+
+                                     <div class="col-md-4">
+                                        {% bootstrap_field mdt_form.description %}
+                                    </div>
+                                    <div class="col-md-2">
+                                        {% bootstrap_field mdt_form.date_of_mdt label="Date of MDT"%}
+                                    </div>
+                                    <div class="col-md-2">
+                                        {% bootstrap_field mdt_form.status %}
+                                    </div>
+                                    <div class="col-md-3">
+                                        {% bootstrap_label "Current Attendees" %}
+                                        {% for attendee in attendees %}
+                                            {{attendee}}
+                                        {% endfor %}
+                                    </div>
+                                    <div class="col-md-1">
+                                    {% if mdt_form.status.value != "C" %}
+                                        <br>            
+                                        <button type="submit" name="mdt_update" class="btn btn-default">Save</button>
+                                    {% endif %}
+                                    </div>
+
+                             </div>
+
+                     </div>
+                    </div>
+                </form>
+        </div>
+    </div>
 
     <div class=row>
         <div class="col-md-12">
 
                     <div id="proband" class="tab-pane fade in active">
                         <div class="panel panel-default" >
-                            <div class="panel-heading">Proband</div>
+                            <div class="panel-heading">Cases</div>
                             <div class="panel-body">
 
                                 <div class="table-responsive"  >
@@ -95,6 +145,10 @@ SOFTWARE.
                                                 <th>Discussion</th>
                                                 <th>Action</th>
                                                 <th>Edit Important Variants</th>
+                                                {% if sample_type == 'raredisease' %}
+                                                <th>Edit CNVs</th>
+                                                <th>Edit STRs</th>
+                                                {% endif %}
                                                 <th>Edit T3 Variants</th>
                                                 <th>Disease Type</th>
                                                 {% if sample_type == 'cancer' %}
@@ -102,6 +156,7 @@ SOFTWARE.
                                                 {% else %}
                                                 <th>MDT Outcome Form</tH>
                                                 {% endif %}
+                                                <th>Check status</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -121,52 +176,17 @@ SOFTWARE.
                     </div>
                 </div>
     </div>
-
-
-    <form role="form" method="post" enctype="multipart/form-data">
-     {% csrf_token %}
-         <div class=row style="text-align:center">
-        <div class="col-md-10" style="text-align:center" >
-
-            <div class="panel panel-default">
-                <div class="panel-heading">MDT Information</div>
-                <div class="panel-body">
-                <div class="row">
-                    <div class="col-md-4">
-                        {% bootstrap_field mdt_form.description %}
-                    </div>
-                    <div class="col-md-2">
-                        {% bootstrap_field mdt_form.date_of_mdt %}
-                    </div>
-                    <div class="col-md-2">
-                        {% bootstrap_field mdt_form.status %}
-                    </div>
-                    <div class="col-md-2">
-                        <h5>Current Attendees</h5>
-                        {% for attendee in attendees %}
-                            {{attendee}}
-                        {% endfor %}
-                    </div>
-                    </div>
-                    {% if mdt_form.status.value != "C" %}
-                    <div class="row" >
-                        <div class="col-md-1">
-                        <button type="submit" name="mdt_update" class="btn btn-default">Save</button>
-                        </div>
-                    </div>
-                    {% endif %}
-                </div>
-
-        </div>
-        </div>
-        </div>
-    </form>
 </div>
 
      <script>
     $(document).ready(function() {
         $('#mdt-proband-table').DataTable({
             dom: 'lBfrtip',
+            "lengthMenu": [[5, 10, 20, -1], [5, 10, 20, "All"]],
+            "order": [[ 0, "desc" ]],
+            "scrollY": "400px",
+            "scrollX": true,
+            "scrollCollapse": true,
             buttons: [ {
                 extend: 'excelHtml5',
                 title: "MDT_{{mdt_id}}"

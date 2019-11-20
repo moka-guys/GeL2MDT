@@ -20,7 +20,7 @@ try:
     from .local_settings import SECRET_KEY, DEBUG, ALLOWED_HOSTS, DATABASES, ADDITIONAL_APPS
 except ImportError:
     print('Check the following settings are present in local_settings.py:\n'
-          'SECRET_KEY, DEBUG, ALLOWED_HOSTS, DATABASES')
+          'SECRET_KEY, DEBUG, ALLOWED_HOSTS, DATABASES, ADDITIONAL_APPS')
     sys.exit()
 
 
@@ -39,7 +39,6 @@ STATICFILES_DIRS = (
 
 INSTALLED_APPS = [
     'gel2mdt.apps.Gel2MdtConfig',
-    'gel2clin.apps.Gel2ClinConfig',
     'django.contrib.contenttypes',
     'django.contrib.admin',
     'django.contrib.auth',
@@ -201,3 +200,6 @@ NOTEBOOK_ARGUMENTS = [
     '--no-browser',
     '--allow-root'
 ]
+
+# Max number of parameters that may be received via GET or POST
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 1500
